@@ -1,0 +1,34 @@
+pipeline:
+  agent: python-linux
+  stages:
+    - name: Checkout
+      steps:
+        - "git checkout ${SHA}"
+
+    - name: Setup Venv
+      steps:
+        - "python -m venv .venv"
+        - "pip install -r requirements.txt"
+
+    - name: Quality
+      parallel:
+        - name: Flake8
+          steps:
+            - "flake8 src/ --max-line-length=120"
+        - name: Pytest
+          steps:
+            - "pytest tests/ -v --cov=src"
+        - name: Type Check
+          steps:
+            - "mypy src/ --strict"
+
+    - name: Package
+      steps:
+        - "python setup.py sdist bdist_wheel"
+
+    - name: Deploy
+      when:
+        branch: main
+      steps:
+        - "twine upload dist/*"
+        - "kubectl rollout restart deployment/python-api"

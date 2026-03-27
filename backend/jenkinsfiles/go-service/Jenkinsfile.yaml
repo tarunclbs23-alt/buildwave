@@ -1,0 +1,38 @@
+pipeline:
+  agent: go-linux
+  stages:
+    - name: Checkout
+      steps:
+        - "git checkout ${SHA}"
+
+    - name: Dependencies
+      steps:
+        - "go mod download"
+        - "go mod verify"
+
+    - name: Checks
+      parallel:
+        - name: Vet
+          steps:
+            - "go vet ./..."
+        - name: Test
+          steps:
+            - "go test ./... -race -coverprofile=coverage.out"
+        - name: Staticcheck
+          steps:
+            - "staticcheck ./..."
+
+    - name: Build
+      steps:
+        - "CGO_ENABLED=0 go build -ldflags='-s -w' -o bin/service ./cmd/server"
+        - "docker build -t go-service:${SHA} ."
+
+    - name: Integration Test
+      steps:
+        - "docker compose -f docker-compose.test.yml up --abort-on-container-exit"
+
+    - name: Deploy
+      when:
+        branch: main
+      steps:
+        - "helm upgrade --install go-service charts/go-service --set image.tag=${SHA}"

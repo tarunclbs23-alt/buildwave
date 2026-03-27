@@ -1,0 +1,31 @@
+pipeline:
+  agent: node-linux
+  stages:
+    - name: Checkout
+      steps:
+        - "git checkout ${SHA}"
+
+    - name: Install
+      steps:
+        - "npm ci"
+
+    - name: Lint & Test
+      parallel:
+        - name: Lint
+          steps:
+            - "npm run lint"
+        - name: Unit Test
+          steps:
+            - "npm test -- --coverage"
+
+    - name: Build
+      steps:
+        - "npm run build"
+        - "docker build -t node-app:${SHA} ."
+
+    - name: Deploy
+      when:
+        branch: main
+      steps:
+        - "kubectl apply -f k8s/deployment.yaml"
+        - "kubectl set image deployment/node-app node-app=node-app:${SHA}"
