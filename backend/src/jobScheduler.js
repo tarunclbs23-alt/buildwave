@@ -202,6 +202,41 @@ function sanitizeJob(job) {
   return { ...job };
 }
 
+/**
+ * Delete a job by ID (only if completed or failed).
+ */
+function deleteJob(id) {
+  const job = jobStore.get(id);
+  if (!job) return false;
+  
+  if (job.status !== 'completed' && job.status !== 'failed') return false;
+
+  const dedupKey = `${job.repo}:${job.sha}`;
+  shaSet.delete(dedupKey);
+  jobStore.delete(id);
+  return true;
+}
+
+/**
+ * Delete all completed/failed jobs.
+ */
+function deleteAllCompleted() {
+  const completedIds = [];
+  for (const [id, job] of jobStore.entries()) {
+    if (job.status === 'completed' || job.status === 'failed') {
+      completedIds.push(id);
+    }
+  }
+
+  for (const id of completedIds) {
+    const job = jobStore.get(id);
+    const dedupKey = `${job.repo}:${job.sha}`;
+    shaSet.delete(dedupKey);
+    jobStore.delete(id);
+  }
+  return completedIds.length;
+}
+
 module.exports = {
   init,
   enqueueJob,
@@ -209,4 +244,6 @@ module.exports = {
   getAllJobs,
   getJobById,
   releaseSlot,
+  deleteJob,
+  deleteAllCompleted,
 };

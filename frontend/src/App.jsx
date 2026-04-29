@@ -16,7 +16,7 @@ import useJobs from './hooks/useJobs';
 
 function App() {
   const [modalOpen, setModalOpen] = useState(false);
-  const { jobs, queued, inProgress, completed, handleEvent, totalJobs } = useJobs();
+  const { jobs, queued, inProgress, completed, handleEvent, totalJobs, deleteJob, clearCompleted } = useJobs();
   const { connected } = useSSE(handleEvent);
 
   // Count failed jobs in completed column
@@ -96,11 +96,24 @@ function App() {
         {/* ── Completed Column ── */}
         <div className="column completed" id="column-completed">
           <div className="column-header">
-            <div className="column-title">
-              <span className="column-title-dot" />
-              <span>Completed</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <div className="column-title">
+                <span className="column-title-dot" />
+                <span>Completed</span>
+              </div>
+              <span className="column-count">{completed.length}</span>
             </div>
-            <span className="column-count">{completed.length}</span>
+            {completed.length > 0 && (
+              <button 
+                onClick={clearCompleted}
+                title="Clear all completed jobs"
+                style={{ background: 'none', border: 'none', color: '#ff6b6b', cursor: 'pointer', fontSize: '14px', padding: '4px', borderRadius: '4px' }}
+                onMouseOver={(e) => e.target.style.background = 'rgba(255, 107, 107, 0.1)'}
+                onMouseOut={(e) => e.target.style.background = 'none'}
+              >
+                🗑️
+              </button>
+            )}
           </div>
           <div className="column-jobs">
             {completed.length === 0 ? (
@@ -109,7 +122,7 @@ function App() {
                 <div className="empty-state-text">No completed builds yet</div>
               </div>
             ) : (
-              completed.map(job => <JobCard key={job.id} job={job} />)
+              completed.map(job => <JobCard key={job.id} job={job} onDelete={() => deleteJob(job.id)} />)
             )}
           </div>
         </div>

@@ -64,6 +64,21 @@ app.get('/api/jobs/:id', (req, res) => {
   res.json(job);
 });
 
+// Delete all completed jobs
+app.delete('/api/jobs/completed', (req, res) => {
+  const count = scheduler.deleteAllCompleted();
+  res.json({ message: `Deleted ${count} jobs` });
+});
+
+// Delete single job
+app.delete('/api/jobs/:id', (req, res) => {
+  const success = scheduler.deleteJob(req.params.id);
+  if (!success) {
+    return res.status(404).json({ error: 'Job not found or not completed' });
+  }
+  res.json({ message: 'Job deleted' });
+});
+
 // List available repos (for trigger modal)
 app.get('/api/repos', (req, res) => {
   const fs = require('fs');
