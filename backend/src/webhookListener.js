@@ -8,16 +8,29 @@ const { v4: uuidv4 } = require('uuid');
 const scheduler = require('./jobScheduler');
 
 /**
- * Determine priority tier from branch name.
- *   main/master → 1 (highest)
- *   PR branches (contain 'pr' or 'pull') → 2
- *   feature branches → 3
+ * Determine priority tier from branch name, repo importance, and message flags.
+ * Lower number = higher priority.
  */
-function computePriority(branch) {
-  const lower = branch.toLowerCase();
-  if (lower === 'main' || lower === 'master') return 1;
-  if (lower.includes('pr') || lower.includes('pull')) return 2;
-  return 3;
+function computePriority(branch, repoName, message) {
+  let priority = 50; // Default feature/misc branch priority
+
+  const lowerBranch = branch.toLowerCase();
+  if (lowerBranch.startsWith('hotfix/')) priority = 10;
+  else if (lowerBranch.startsWith('release/')) priority = 20;
+  else if (lowerBranch === 'main' || lowerBranch === 'master') priority = 30;
+  else if (lowerBranch.startsWith('pr/') || lowerBranch.includes('pull')) priority = 40;
+
+  // Repository Importance Bonus
+  if (repoName === 'buildwave') {
+    priority -= 5; // Core repo bonus
+  }
+
+  // Commit message override
+  if (message && message.toLowerCase().includes('[urgent]')) {
+    priority -= 15;
+  }
+
+  return Math.max(1, priority); // Ensure priority doesn't drop below 1
 }
 
 /**
@@ -79,7 +92,7 @@ async function webhookHandler(req, res) {
       message: message,
       timestamp: new Date().toISOString(),
       pipeline_file: payload.pipeline_file || 'Jenkinsfile.yaml',
-      priority: computePriority(branch),
+      priority: computePriority(branch, repoName, message),
       status: 'queued',
       stages: [],
       createdAt: new Date().toISOString(),
