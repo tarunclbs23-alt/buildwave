@@ -1,3 +1,4 @@
+
 # BuildWave: Mini-Jenkins Pipeline System
 
 BuildWave is a robust mini-Jenkins CI/CD pipeline system featuring a webhook listener, a job scheduler with a priority queue, and a pipeline engine. It parses YAML-based `Jenkinsfile` configurations to execute build stages as a Directed Acyclic Graph (DAG) and track their progress. It handles multiple repository builds concurrently and provides real-time updates through a React-based frontend Kanban dashboard using Server-Sent Events (SSE).
@@ -88,3 +89,4 @@ buildwave/
 
 ISC License
 # tarun
+
