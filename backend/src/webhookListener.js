@@ -43,7 +43,7 @@ function extractBranch(ref) {
  * POST /api/webhook handler.
  * Accepts GitHub-format webhook or simplified payload.
  */
-function webhookHandler(req, res) {
+async function webhookHandler(req, res) {
   try {
     const payload = req.body;
 
@@ -90,7 +90,7 @@ function webhookHandler(req, res) {
     console.log(`[Webhook] Received push → ${repoName}/${branch} @ ${sha.substring(0, 7)} by ${author}`);
 
     // --- Hand off to scheduler ---
-    const result = scheduler.enqueueJob(jobRequest);
+    const result = await scheduler.enqueueJob(jobRequest);
 
     if (result.rejected) {
       return res.status(409).json({

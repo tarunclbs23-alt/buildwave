@@ -16,6 +16,7 @@ const { webhookHandler } = require('./src/webhookListener');
 const { sseHandler } = require('./src/sseManager');
 const scheduler = require('./src/jobScheduler');
 const pipelineEngine = require('./src/pipelineEngine');
+const db = require('./src/db');
 
 // ─── Initialize ─────────────────────────────────────────────────────
 // Wire pipeline engine into scheduler (avoids circular dependency)
@@ -50,33 +51,49 @@ app.post('/api/webhook', webhookHandler);
 app.get('/api/events', sseHandler);
 
 // Job listing
-app.get('/api/jobs', (req, res) => {
-  const state = scheduler.getQueueState();
-  res.json(state);
+app.get('/api/jobs', async (req, res) => {
+  try {
+    const state = await scheduler.getQueueState();
+    res.json(state);
+  } catch (err) {
+    res.status(500).json({ error: 'Database error' });
+  }
 });
 
 // Single job detail
-app.get('/api/jobs/:id', (req, res) => {
-  const job = scheduler.getJobById(req.params.id);
-  if (!job) {
-    return res.status(404).json({ error: 'Job not found' });
+app.get('/api/jobs/:id', async (req, res) => {
+  try {
+    const job = await scheduler.getJobById(req.params.id);
+    if (!job) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+    res.json(job);
+  } catch (err) {
+    res.status(500).json({ error: 'Database error' });
   }
-  res.json(job);
 });
 
 // Delete all completed jobs
-app.delete('/api/jobs/completed', (req, res) => {
-  const count = scheduler.deleteAllCompleted();
-  res.json({ message: `Deleted ${count} jobs` });
+app.delete('/api/jobs/completed', async (req, res) => {
+  try {
+    const count = await scheduler.deleteAllCompleted();
+    res.json({ message: `Deleted ${count} jobs` });
+  } catch (err) {
+    res.status(500).json({ error: 'Database error' });
+  }
 });
 
 // Delete single job
-app.delete('/api/jobs/:id', (req, res) => {
-  const success = scheduler.deleteJob(req.params.id);
-  if (!success) {
-    return res.status(404).json({ error: 'Job not found or not completed' });
+app.delete('/api/jobs/:id', async (req, res) => {
+  try {
+    const success = await scheduler.deleteJob(req.params.id);
+    if (!success) {
+      return res.status(404).json({ error: 'Job not found or not completed' });
+    }
+    res.json({ message: 'Job deleted' });
+  } catch (err) {
+    res.status(500).json({ error: 'Database error' });
   }
-  res.json({ message: 'Job deleted' });
 });
 
 // List available repos (for trigger modal)
@@ -96,22 +113,27 @@ app.get('/api/repos', (req, res) => {
 });
 
 // ─── Start ──────────────────────────────────────────────────────────
-app.listen(PORT, () => {
-  console.log('');
-  console.log('  ╔══════════════════════════════════════════╗');
-  console.log('  ║                                          ║');
-  console.log('  ║   🔨  B U I L D W A V E   S E R V E R   ║');
-  console.log('  ║                                          ║');
-  console.log(`  ║   Running on http://localhost:${PORT}       ║`);
-  console.log('  ║                                          ║');
-  console.log('  ║   Endpoints:                             ║');
-  console.log('  ║     POST /api/webhook    Receive pushes  ║');
-  console.log('  ║     GET  /api/events     SSE stream      ║');
-  console.log('  ║     GET  /api/jobs       List jobs       ║');
-  console.log('  ║     GET  /api/jobs/:id   Job detail      ║');
-  console.log('  ║     GET  /api/repos      List repos      ║');
-  console.log('  ║     GET  /api/health     Health check    ║');
-  console.log('  ║                                          ║');
-  console.log('  ╚══════════════════════════════════════════╝');
-  console.log('');
+db.init().then(() => {
+  app.listen(PORT, () => {
+    console.log('');
+    console.log('  ╔══════════════════════════════════════════╗');
+    console.log('  ║                                          ║');
+    console.log('  ║   🔨  B U I L D W A V E   S E R V E R   ║');
+    console.log('  ║                                          ║');
+    console.log(`  ║   Running on http://localhost:${PORT}       ║`);
+    console.log('  ║                                          ║');
+    console.log('  ║   Endpoints:                             ║');
+    console.log('  ║     POST /api/webhook    Receive pushes  ║');
+    console.log('  ║     GET  /api/events     SSE stream      ║');
+    console.log('  ║     GET  /api/jobs       List jobs       ║');
+    console.log('  ║     GET  /api/jobs/:id   Job detail      ║');
+    console.log('  ║     GET  /api/repos      List repos      ║');
+    console.log('  ║     GET  /api/health     Health check    ║');
+    console.log('  ║                                          ║');
+    console.log('  ╚══════════════════════════════════════════╝');
+    console.log('');
+  });
+}).catch(err => {
+  console.error('Failed to start server due to DB init error:', err);
+  process.exit(1);
 });
