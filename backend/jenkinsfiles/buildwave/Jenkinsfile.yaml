@@ -42,3 +42,11 @@ pipeline:
       steps:
         - run: echo "Deploying to staging environment..."
         - run: ./deploy-staging.sh
+
+    - name: Deploy to Production
+      when:
+        branch: main
+      steps:
+        - run: echo "Shipping to PROD! 🚀"
+        - run: ./deploy-prod.sh
+    
