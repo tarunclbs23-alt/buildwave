@@ -1,29 +1,48 @@
 /**
  * Job Scheduler — The brain of BuildWave.
  * 
- * Five sub-components:
- *   1. Intake Handler    — SHA dedup, validation
- *   2. Priority Queue    — Min-heap by priority + FIFO
- *   3. Routing Engine    — Maps repo → Jenkinsfile config
- *   4. Concurrency Gate  — Max N concurrent builds per repo
- *   5. Dispatcher        — Dequeues + hands to Pipeline Engine
+ * Modified to use PostgreSQL database for persistence.
  */
 
 const eventBus = require('./eventBus');
+const db = require('./db');
 
-// ─── State ──────────────────────────────────────────────────────────
-
-/** @type {Map<string, object>} jobId → job */
-const jobStore = new Map();
-
-/** @type {Array<object>} Priority queue (sorted array) */
-const queue = [];
-
-/** @type {Set<string>} "repo:sha" keys for deduplication */
-const shaSet = new Set();
-
-/** @type {Map<string, number>} repo → count of currently running jobs */
-const concurrencyMap = new Map();
+// Listen to pipeline events and update DB
+eventBus.on('*', async (event) => {
+  const { type, data } = event;
+  try {
+    if (type === 'job.stages_loaded') {
+      await updateJob(data.jobId, { stages: data.stages });
+    } else if (type === 'stage.started' || type === 'stage.completed') {
+      const job = await getJobById(data.jobId);
+      if (job) {
+        const stages = job.stages || [];
+        const stageIndex = stages.findIndex(s => s.name === data.stageName);
+        if (stageIndex !== -1) {
+          if (type === 'stage.started') {
+            stages[stageIndex].status = 'running';
+            stages[stageIndex].startedAt = new Date().toISOString();
+          } else {
+            stages[stageIndex].status = data.status;
+            stages[stageIndex].completedAt = new Date().toISOString();
+            stages[stageIndex].duration = data.duration;
+          }
+          await updateJob(data.jobId, { stages });
+        }
+      }
+    } else if (type === 'job.completed') {
+      await updateJob(data.job.id, { 
+        status: data.finalStatus || data.job.status, 
+        completedAt: data.job.completedAt,
+        stages: data.job.stages 
+      });
+      // A slot just freed up, try dispatching again
+      tryDispatch();
+    }
+  } catch (err) {
+    console.error('[Scheduler] Failed to process event update:', err);
+  }
+});
 
 /** Max concurrent builds per repo */
 const MAX_CONCURRENT_PER_REPO = 2;
@@ -36,22 +55,26 @@ let pipelineEngine = null;
 /**
  * Enqueue a new job. Checks for SHA duplicates, inserts into priority queue.
  * @param {object} jobRequest - Canonical job from the WebhookListener
- * @returns {{ rejected?: boolean, reason?: string }}
+ * @returns {Promise<{ rejected?: boolean, reason?: string }>}
  */
-function enqueueJob(jobRequest) {
-  const dedupKey = `${jobRequest.repo}:${jobRequest.sha}`;
-
+async function enqueueJob(jobRequest) {
   // Idempotency check
-  if (shaSet.has(dedupKey)) {
+  const duplicateCheck = await db.query('SELECT id FROM jobs WHERE repo = $1 AND sha = $2 LIMIT 1', [jobRequest.repo, jobRequest.sha]);
+  if (duplicateCheck.rows.length > 0) {
+    const dedupKey = `${jobRequest.repo}:${jobRequest.sha.substring(0, 7)}`;
     console.log(`[Scheduler] Rejected duplicate: ${dedupKey}`);
-    return { rejected: true, reason: `Duplicate: job for ${jobRequest.repo}@${jobRequest.sha.substring(0, 7)} already exists` };
+    return { rejected: true, reason: `Duplicate: job for ${dedupKey} already exists` };
   }
 
-  shaSet.add(dedupKey);
-  jobStore.set(jobRequest.id, jobRequest);
-
-  // Insert into priority queue
-  priorityEnqueue(jobRequest);
+  // Insert into database
+  await db.query(`
+    INSERT INTO jobs (id, repo, "repoFullName", branch, sha, author, message, "timestamp", pipeline_file, priority, status, stages, "createdAt")
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+  `, [
+    jobRequest.id, jobRequest.repo, jobRequest.repoFullName, jobRequest.branch, jobRequest.sha, jobRequest.author, 
+    jobRequest.message, jobRequest.timestamp, jobRequest.pipeline_file, jobRequest.priority, 'queued', 
+    JSON.stringify(jobRequest.stages || []), jobRequest.createdAt
+  ]);
 
   console.log(`[Scheduler] Queued job ${jobRequest.id.substring(0, 8)} → ${jobRequest.repo}/${jobRequest.branch} (priority ${jobRequest.priority})`);
 
@@ -63,115 +86,77 @@ function enqueueJob(jobRequest) {
   return {};
 }
 
-// ─── 2. Priority Queue ─────────────────────────────────────────────
-
-/**
- * Insert into sorted queue. Lower priority number = higher priority.
- * Within same priority, earlier timestamp goes first (FIFO).
- */
-function priorityEnqueue(job) {
-  let inserted = false;
-  for (let i = 0; i < queue.length; i++) {
-    if (job.priority < queue[i].priority ||
-        (job.priority === queue[i].priority && job.timestamp < queue[i].timestamp)) {
-      queue.splice(i, 0, job);
-      inserted = true;
-      break;
-    }
-  }
-  if (!inserted) queue.push(job);
-}
-
-/**
- * Dequeue the highest-priority eligible job (respects concurrency gate).
- * @returns {object|null}
- */
-function dequeueNext() {
-  for (let i = 0; i < queue.length; i++) {
-    const job = queue[i];
-    if (canRun(job.repo)) {
-      queue.splice(i, 1);
-      return job;
-    }
-  }
-  return null;
-}
-
-// ─── 3. Routing Engine (simplified) ─────────────────────────────────
-
-// In v1, routing is just "does the repo have a Jenkinsfile?" — handled by PipelineEngine
-
-// ─── 4. Concurrency Gate ────────────────────────────────────────────
+// ─── 2. Priority Queue & Dispatcher ────────────────────────────────
 
 /**
  * Check if a repo has available executor slots.
  */
-function canRun(repo) {
-  const running = concurrencyMap.get(repo) || 0;
+async function canRun(repo) {
+  const result = await db.query(`SELECT COUNT(*) as count FROM jobs WHERE repo = $1 AND status = 'in_progress'`, [repo]);
+  const running = parseInt(result.rows[0].count, 10);
   return running < MAX_CONCURRENT_PER_REPO;
 }
 
 /**
- * Acquire a slot for the repo.
- */
-function acquireSlot(repo) {
-  const current = concurrencyMap.get(repo) || 0;
-  concurrencyMap.set(repo, current + 1);
-  console.log(`[Scheduler] Slot acquired for ${repo}. Running: ${current + 1}/${MAX_CONCURRENT_PER_REPO}`);
-}
-
-/**
- * Release a slot when a job completes.
- */
-function releaseSlot(repo) {
-  const current = concurrencyMap.get(repo) || 1;
-  concurrencyMap.set(repo, Math.max(0, current - 1));
-  console.log(`[Scheduler] Slot released for ${repo}. Running: ${Math.max(0, current - 1)}/${MAX_CONCURRENT_PER_REPO}`);
-
-  // Try to dispatch waiting jobs now that a slot opened
-  tryDispatch();
-}
-
-// ─── 5. Dispatcher ──────────────────────────────────────────────────
-
-/**
  * Try to dequeue and dispatch the next eligible job.
  */
-function tryDispatch() {
+async function tryDispatch() {
   if (!pipelineEngine) return;
 
-  const job = dequeueNext();
-  if (!job) return;
+  // Find the highest priority queued job where the repo has available slots
+  const queuedResult = await db.query(`SELECT * FROM jobs WHERE status = 'queued' ORDER BY priority ASC, "createdAt" ASC`);
+  
+  for (const job of queuedResult.rows) {
+    if (await canRun(job.repo)) {
+      // Dispatch this job
+      const now = new Date().toISOString();
+      await db.query(`UPDATE jobs SET status = 'in_progress', "startedAt" = $1 WHERE id = $2`, [now, job.id]);
+      
+      job.status = 'in_progress';
+      job.startedAt = now;
+      if (typeof job.stages === 'string') job.stages = JSON.parse(job.stages);
 
-  acquireSlot(job.repo);
+      console.log(`[Scheduler] Dispatching job ${job.id.substring(0, 8)} → Pipeline Engine`);
+      eventBus.publish('job.dispatched', { job: sanitizeJob(job) });
 
-  job.status = 'in_progress';
-  job.startedAt = new Date().toISOString();
+      // Hand off to pipeline engine (async — it simulates execution)
+      pipelineEngine.executeJob(job).then(async () => {
+        // Job finished (completed or failed) - handled by engine events, but we try dispatching again
+        tryDispatch();
+      });
+      
+      // Successfully dispatched one job, recursive call to dispatch more if possible
+      tryDispatch();
+      return;
+    }
+  }
+}
 
-  console.log(`[Scheduler] Dispatching job ${job.id.substring(0, 8)} → Pipeline Engine`);
-  eventBus.publish('job.dispatched', { job: sanitizeJob(job) });
-
-  // Hand off to pipeline engine (async — it simulates execution)
-  pipelineEngine.executeJob(job).then(() => {
-    // Job finished (completed or failed)
-    releaseSlot(job.repo);
-  });
+/**
+ * Update job in database (used by pipeline engine to save stages/status)
+ */
+async function updateJob(id, updates) {
+  const fields = [];
+  const values = [];
+  let index = 1;
+  for (const [key, value] of Object.entries(updates)) {
+    fields.push(`"${key}" = $${index}`);
+    values.push(key === 'stages' ? JSON.stringify(value) : value);
+    index++;
+  }
+  values.push(id);
+  await db.query(`UPDATE jobs SET ${fields.join(', ')} WHERE id = $${index}`, values);
 }
 
 // ─── Public API ─────────────────────────────────────────────────────
 
-/**
- * Initialize with reference to pipeline engine (avoids circular deps).
- */
 function init(engine) {
   pipelineEngine = engine;
 }
 
-/**
- * Get the full state for the REST API.
- */
-function getQueueState() {
-  const jobs = Array.from(jobStore.values()).map(sanitizeJob);
+async function getQueueState() {
+  const result = await db.query(`SELECT * FROM jobs ORDER BY "createdAt" ASC`);
+  const jobs = result.rows.map(parseStages);
   return {
     queued: jobs.filter(j => j.status === 'queued'),
     in_progress: jobs.filter(j => j.status === 'in_progress'),
@@ -180,26 +165,36 @@ function getQueueState() {
   };
 }
 
-/**
- * Get all jobs as array.
- */
-function getAllJobs() {
-  return Array.from(jobStore.values()).map(sanitizeJob);
+async function getAllJobs() {
+  const result = await db.query(`SELECT * FROM jobs ORDER BY "createdAt" ASC`);
+  return result.rows.map(parseStages);
 }
 
-/**
- * Get a single job by ID.
- */
-function getJobById(id) {
-  const job = jobStore.get(id);
-  return job ? sanitizeJob(job) : null;
+async function getJobById(id) {
+  const result = await db.query(`SELECT * FROM jobs WHERE id = $1`, [id]);
+  if (result.rows.length === 0) return null;
+  return parseStages(result.rows[0]);
 }
 
-/**
- * Create a safe copy for API/SSE responses.
- */
+function parseStages(job) {
+  if (typeof job.stages === 'string') {
+    job.stages = JSON.parse(job.stages);
+  }
+  return sanitizeJob(job);
+}
+
 function sanitizeJob(job) {
   return { ...job };
+}
+
+async function deleteJob(id) {
+  const result = await db.query(`DELETE FROM jobs WHERE id = $1 AND status IN ('completed', 'failed')`, [id]);
+  return result.rowCount > 0;
+}
+
+async function deleteAllCompleted() {
+  const result = await db.query(`DELETE FROM jobs WHERE status IN ('completed', 'failed')`);
+  return result.rowCount;
 }
 
 module.exports = {
@@ -208,5 +203,8 @@ module.exports = {
   getQueueState,
   getAllJobs,
   getJobById,
-  releaseSlot,
+  deleteJob,
+  deleteAllCompleted,
+  updateJob,
+  tryDispatch,
 };

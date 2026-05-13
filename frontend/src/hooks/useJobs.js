@@ -138,6 +138,40 @@ export default function useJobs() {
     .filter(j => j.status === 'completed' || j.status === 'failed')
     .sort((a, b) => new Date(b.completedAt || b.createdAt) - new Date(a.completedAt || a.createdAt));
 
+  const deleteJob = useCallback(async (id) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/jobs/${id}`, { method: 'DELETE' });
+      if (res.ok) {
+        setJobs(prev => {
+          const next = { ...prev };
+          delete next[id];
+          return next;
+        });
+      }
+    } catch (err) {
+      console.error('Failed to delete job', err);
+    }
+  }, []);
+
+  const clearCompleted = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/jobs/completed`, { method: 'DELETE' });
+      if (res.ok) {
+        setJobs(prev => {
+          const next = { ...prev };
+          for (const key in next) {
+            if (next[key].status === 'completed' || next[key].status === 'failed') {
+              delete next[key];
+            }
+          }
+          return next;
+        });
+      }
+    } catch (err) {
+      console.error('Failed to clear completed jobs', err);
+    }
+  }, []);
+
   return {
     jobs,
     queued,
@@ -145,5 +179,7 @@ export default function useJobs() {
     completed,
     handleEvent,
     totalJobs: jobList.length,
+    deleteJob,
+    clearCompleted,
   };
 }

@@ -43,7 +43,7 @@ function extractBranch(ref) {
  * POST /api/webhook handler.
  * Accepts GitHub-format webhook or simplified payload.
  */
-function webhookHandler(req, res) {
+async function webhookHandler(req, res) {
   try {
     const payload = req.body;
 
@@ -53,12 +53,11 @@ function webhookHandler(req, res) {
     }
 
     // Support both GitHub-format and simplified format
-    const repoFullName = payload.repository?.full_name || payload.repository?.name || payload.repo;
-    const ref = payload.ref || `refs/heads/${payload.branch || 'main'}`;
+    const repoFullName = payload.repository?.full_name || payload.repo;
     const sha = payload.after || payload.head_commit?.id || payload.sha;
+    const ref = payload.ref || payload.branch;
     const author = payload.head_commit?.author?.name || payload.pusher?.name || payload.author || 'unknown';
-    const message = payload.head_commit?.message || payload.message || 'No commit message';
-
+    const message = payload.head_commit?.message || payload.message || 'Manual trigger';
     if (!repoFullName) {
       return res.status(400).json({ error: 'Missing required field: repository name' });
     }
@@ -91,7 +90,7 @@ function webhookHandler(req, res) {
     console.log(`[Webhook] Received push → ${repoName}/${branch} @ ${sha.substring(0, 7)} by ${author}`);
 
     // --- Hand off to scheduler ---
-    const result = scheduler.enqueueJob(jobRequest);
+    const result = await scheduler.enqueueJob(jobRequest);
 
     if (result.rejected) {
       return res.status(409).json({

@@ -11,7 +11,7 @@ const REPO_ICONS = {
   'go-service': '🔷',
 };
 
-export default function JobCard({ job }) {
+export default function JobCard({ job, onDelete }) {
   const [expanded, setExpanded] = useState(job.status === 'in_progress');
 
   const repoIcon = REPO_ICONS[job.repo] || '📁';
@@ -47,6 +47,17 @@ export default function JobCard({ job }) {
               {job.status === 'completed' ? '✓ Pass' : '✗ Fail'}
             </span>
           )}
+          {onDelete && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onDelete(); }}
+              title="Delete job"
+              style={{ background: 'none', border: 'none', color: '#ff6b6b', cursor: 'pointer', fontSize: '12px', padding: '0', margin: '0 0 0 4px', borderRadius: '4px' }}
+              onMouseOver={(e) => e.target.style.background = 'rgba(255, 107, 107, 0.1)'}
+              onMouseOut={(e) => e.target.style.background = 'none'}
+            >
+              🗑️
+            </button>
+          )}
         </div>
       </div>
 
@@ -55,7 +66,20 @@ export default function JobCard({ job }) {
       <div className="job-meta">
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
           <span className="job-author">👤 {job.author}</span>
-          <span className="job-sha">{shortSha}</span>
+          {job.repoFullName ? (
+            <a
+              href={`https://github.com/${job.repoFullName}/commit/${job.sha}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="job-sha"
+              onClick={(e) => e.stopPropagation()}
+              title="View commit on GitHub"
+            >
+              {shortSha}
+            </a>
+          ) : (
+            <span className="job-sha">{shortSha}</span>
+          )}
           <span className={`job-priority p${job.priority}`}>
             ▲ {priorityLabel}
           </span>

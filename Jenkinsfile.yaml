@@ -1,0 +1,49 @@
+pipeline:
+  agent: any
+  
+  # Note: In BuildWave, priority is automatically determined by the branch name:
+  # - main/master branch = Priority 1 (Highest)
+  # - pr/* branches      = Priority 2
+  # - feature/* branches = Priority 3
+
+  stages:
+    - name: Checkout
+      steps:
+        - run: git pull origin main
+        - run: echo "Checked out latest code"
+
+    - name: Install Dependencies
+      steps:
+        - run: npm install
+        - run: pip install -r requirements.txt
+
+    - name: Linting
+      steps:
+        - run: npm run lint
+        - run: flake8 .
+
+    # You can run stages in parallel to speed up builds!
+    - name: Testing Suite
+      parallel:
+        - name: Unit Tests
+          steps:
+            - run: npm run test:unit
+        - name: Integration Tests
+          steps:
+            - run: npm run test:integration
+        - name: Security Scan
+          steps:
+            - run: npm run scan:snyk
+
+    - name: Build Application
+      steps:
+        - run: npm run build
+        - run: docker build -t buildwave-app .
+
+    - name: Deploy to Staging
+      # This 'when' condition means this stage will ONLY run if the branch is 'main'
+      when:
+        branch: main
+      steps:
+        - run: echo "Deploying to staging environment..."
+        - run: ./deploy-staging.sh
